@@ -189,7 +189,7 @@ class TwitterListManager:
                     print_status(self.stats)
                     await asyncio.sleep(60)
                     
-                await self.client.unfollow(user_id)
+                await self.client.unfollow_user(user_id)
                 await self.rate_limiter.increment("unfollow")
                 self.stats["unfollowed"] += 1
                 
