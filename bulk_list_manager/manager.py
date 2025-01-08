@@ -29,7 +29,8 @@ class TwitterListManager:
             "added_to_list": 0,
             "unfollowed": 0,
             "failed": 0,
-            "time_to_next": 0
+            "time_to_next": 0,
+            "mode": None  # New field to track current mode
         }
 
     async def login(self, username: str = None, email: str = None, password: str = None, 
@@ -81,7 +82,7 @@ class TwitterListManager:
                 raise BadRequest("Failed to create list")
             
             # Extract list ID from response
-            list_id = getattr(response, 'id', None)
+            list_id = response.id  # Updated to use the List object's id attribute
             if not list_id:
                 raise BadRequest("Failed to get list ID from response")
                 
@@ -90,17 +91,31 @@ class TwitterListManager:
             print(f"Failed to create list: {str(e)}")
             raise
     
-    async def process_following(self, list_id: str):
-        """Process all following accounts in batches."""
-        batch_size = 200  # Increased since we have 500 requests per 15 min window
+    async def process_following(self, list_id: str, mode: str = "both"):
+        """Process all following accounts in batches.
+        
+        Args:
+            list_id: The ID of the list to add users to
+            mode: Operation mode - "add_to_list", "unfollow", or "both"
+        """
+        if mode not in ["add_to_list", "unfollow", "both"]:
+            raise ValueError("Invalid mode. Must be 'add_to_list', 'unfollow', or 'both'")
+            
+        # Validate list_id requirement
+        if mode in ["add_to_list", "both"] and not list_id:
+            raise ValueError("list_id is required for add_to_list and both modes")
+            
+        self.stats["mode"] = mode
+        batch_size = 200
         following = []
         cursor = None
         
         # Load any saved progress
         saved_state = self.load_progress()
-        if saved_state:
+        if saved_state and saved_state.get("mode") == mode:
             self.processed_users = set(saved_state.get("processed_users", []))
             self.stats = saved_state.get("stats", self.stats)
+            self.stats["mode"] = mode  # Ensure mode is set correctly
         
         try:
             # Get the authenticated user's ID
@@ -111,59 +126,54 @@ class TwitterListManager:
                 if self._should_stop:
                     return
                     
-                # Check rate limit for get_user_following (500 per 15 min)
                 while not await self.rate_limiter.check_limit("get_user_following"):
                     self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("get_user_following")
                     print_status(self.stats)
                     await asyncio.sleep(60)
                 
                 try:
-                    # Get following using the user_id, count, and cursor
                     response = await self.client.get_user_following(
                         user_id=user_id,
                         count=batch_size,
                         cursor=cursor
                     )
                     if not response:
-                        raise NotFound("Failed to get following")
-
-                    # Handle twikit's Result[User] format
+                        break  # No more results
+                        
                     users = response
-                    
                     new_users = [user for user in users 
                                if str(getattr(user, 'id', None)) not in self.processed_users]
                     following.extend(new_users)
                     
                     await self.rate_limiter.increment("get_user_following")
                     
-                    # Update cursor for next iteration
-                    cursor = response.next_cursor
-                    if not cursor or len(response) < batch_size:  # No more users to fetch
-                        break
+                    # Get next cursor from the Result object
+                    cursor = getattr(response, 'next_cursor', None)
+                    if not cursor:
+                        break  # No more pages to fetch
                     
                     self.stats["total"] = len(following) + len(self.processed_users)
                     print_status(self.stats)
+                    
+                    # Process current batch before fetching more
+                    await self._process_batch(new_users, list_id, mode)
+                    self.save_progress(list_id)
+                    
                 except (UserNotFound, UserUnavailable) as e:
                     print(f"User error: {str(e)}")
                     continue
-                
-            # Process users in batches
-            for i in range(0, len(following), batch_size):
-                if self._should_stop:
-                    break
-                    
-                batch = following[i:i + batch_size]
-                await self._process_batch(batch, list_id)
-                
-                self.save_progress(list_id)
+                except Exception as e:
+                    print(f"Error fetching following: {str(e)}")
+                    self.save_progress(list_id)
+                    raise
                 
         except Exception as e:
             print(f"Error processing following: {str(e)}")
             self.save_progress(list_id)
             raise
-            
-    async def _process_batch(self, users: List[Dict], list_id: str):
-        """Process a batch of users."""
+
+    async def _process_batch(self, users: List[Dict], list_id: str, mode: str):
+        """Process a batch of users based on the selected mode."""
         for user in users:
             if self._should_stop or self._is_paused:
                 return
@@ -173,31 +183,20 @@ class TwitterListManager:
                 if not user_id:
                     continue
 
-                # Add cooldown between operations
-                await asyncio.sleep(2)
-
-                # Add to list
-                await self.client.add_list_member(list_id, user_id)
-                self.stats["added_to_list"] += 1
+                if mode in ["add_to_list", "both"]:
+                    await self._add_to_list(user_id, list_id)
                 
-                # Add cooldown between operations
-                await asyncio.sleep(2)
-                
-                # Unfollow
-                while not await self.rate_limiter.check_limit("unfollow"):
-                    self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("unfollow")
-                    print_status(self.stats)
-                    await asyncio.sleep(60)
-                    
-                await self.client.unfollow_user(user_id)
-                await self.rate_limiter.increment("unfollow")
-                self.stats["unfollowed"] += 1
+                if mode in ["unfollow", "both"]:
+                    # Add cooldown between operations if doing both
+                    if mode == "both":
+                        await asyncio.sleep(2)
+                    await self._unfollow_user(user_id)
                 
                 self.processed_users.add(user_id)
                 self.stats["processed"] += 1
                 
             except (BadRequest, Forbidden, NotFound, UserNotFound, UserUnavailable) as e:
-                print(f"Failed to process user {getattr(user, 'id', 'unknown')}: {str(e)}")
+                print(f"Failed to process user {user_id}: {str(e)}")
                 self.stats["failed"] += 1
             except TooManyRequests:
                 print("Rate limit exceeded. Waiting...")
@@ -207,7 +206,31 @@ class TwitterListManager:
                 self.stats["failed"] += 1
                 
             print_status(self.stats)
+
+    async def _add_to_list(self, user_id: str, list_id: str):
+        """Add a user to the specified list."""
+        try:
+            await asyncio.sleep(2)  # Add cooldown
+            await self.client.add_list_member(list_id, user_id)
+            self.stats["added_to_list"] += 1
+        except NotFound as e:
+            print(f"List or user not found: {str(e)}")
+            self.stats["failed"] += 1
+        except Exception as e:
+            print(f"Failed to add user {user_id} to list: {str(e)}")
+            self.stats["failed"] += 1
+
+    async def _unfollow_user(self, user_id: str):
+        """Unfollow a user with rate limiting."""
+        while not await self.rate_limiter.check_limit("unfollow"):
+            self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("unfollow")
+            print_status(self.stats)
+            await asyncio.sleep(60)
             
+        await self.client.unfollow_user(user_id)
+        await self.rate_limiter.increment("unfollow")
+        self.stats["unfollowed"] += 1
+
     async def pause(self):
         """Pause the current operation."""
         self._is_paused = True
@@ -227,7 +250,8 @@ class TwitterListManager:
         state = {
             "processed_users": list(self.processed_users),
             "stats": self.stats,
-            "timestamp": time.time()
+            "timestamp": time.time(),
+            "mode": self.stats["mode"]  # Save the current mode
         }
         if list_id:
             state["list_id"] = list_id

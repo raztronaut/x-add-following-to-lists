@@ -52,17 +52,19 @@ async def main():
     if saved_state:
         print("\nFound saved progress:")
         print(f"Processed: {len(saved_state.get('processed_users', []))} accounts")
+        saved_mode = saved_state.get('stats', {}).get('mode', 'both')
+        print(f"Mode: {saved_mode}")
         resume = input("Would you like to resume? (y/n): ").lower() == 'y'
         
         if resume:
             list_id = saved_state.get("list_id")
-            if not list_id:
+            if not list_id and saved_mode in ["add_to_list", "both"]:
                 print("Error: Could not find list ID in saved state")
                 return
             
             print("\nResuming previous operation...")
             try:
-                await manager.process_following(list_id)
+                await manager.process_following(list_id, saved_mode)
             except Exception as e:
                 print(f"Error resuming operation: {str(e)}")
                 manager.save_progress()
@@ -73,20 +75,43 @@ async def main():
     list_description = input("Enter description (optional): ").strip()
     is_private = input("Make list private? (y/n): ").lower() == 'y'
     
+    # Get operation mode
+    print("\nSelect operation mode:")
+    print("1. Add users to list only")
+    print("2. Unfollow users only")
+    print("3. Both (add to list and unfollow)")
+    
+    while True:
+        mode_choice = input("\nEnter mode (1-3): ").strip()
+        if mode_choice == "1":
+            mode = "add_to_list"
+            break
+        elif mode_choice == "2":
+            mode = "unfollow"
+            break
+        elif mode_choice == "3":
+            mode = "both"
+            break
+        else:
+            print("Invalid choice. Please enter 1, 2, or 3.")
+    
     try:
-        # Create list
-        print("\nCreating list...")
-        list_data = await manager.create_list(
-            name=list_name,
-            description=list_description,
-            is_private=is_private
-        )
+        # Create list if needed
+        list_id = None
+        if mode in ["add_to_list", "both"]:
+            print("\nCreating list...")
+            list_data = await manager.create_list(
+                name=list_name,
+                description=list_description,
+                is_private=is_private
+            )
+            list_id = list_data['id']
+            print(f"\nCreated list: {list_name}")
         
-        print(f"\nCreated list: {list_name}")
-        print("Starting to process following...")
+        print(f"\nStarting to process following in {mode} mode...")
         
         # Process following
-        await manager.process_following(list_data['id'])
+        await manager.process_following(list_id, mode)
         
     except KeyboardInterrupt:
         print("\nOperation paused. Choose an option:")
