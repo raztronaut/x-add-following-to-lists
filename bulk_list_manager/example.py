@@ -1,18 +1,40 @@
 import asyncio
 import os
 from pathlib import Path
-from manager import TwitterListManager
-from utils import load_state
+from twikit.errors import (
+    BadRequest, Unauthorized, Forbidden, NotFound,
+    RequestTimeout, TooManyRequests, ServerError,
+    UserNotFound, UserUnavailable
+)
+from .manager import TwitterListManager
+from .utils import load_state
+
+async def get_credentials():
+    """Get user credentials."""
+    print("\nPlease enter your Twitter credentials:")
+    username = input("Username: ").strip()
+    email = input("Email: ").strip()
+    password = input("Password: ").strip()
+    return username, email, password
 
 async def main():
-    # Check for saved state
-    saved_state = load_state("twitter_list_manager_state.json")
-    
-    # Get auth token from environment or user input
-    auth_token = os.getenv("TWITTER_AUTH_TOKEN") or input("Enter your Twitter auth token: ").strip()
-    
     # Initialize manager
-    manager = TwitterListManager(auth_token)
+    manager = TwitterListManager()
+    
+    # Get credentials and login
+    try:
+        username, email, password = await get_credentials()
+        await manager.login(username, email, password)
+        print("Successfully authenticated!")
+    except Unauthorized:
+        print("Error: Authentication failed. Please check your credentials.")
+        return
+    except Exception as e:
+        print(f"Login error: {str(e)}")
+        return
+    
+    # Now check for saved state
+    saved_state = load_state("twitter_list_manager_state.json")
     
     if saved_state:
         print("\nFound saved progress:")
@@ -26,7 +48,11 @@ async def main():
                 return
             
             print("\nResuming previous operation...")
-            await manager.process_following(list_id)
+            try:
+                await manager.process_following(list_id)
+            except Exception as e:
+                print(f"Error resuming operation: {str(e)}")
+                manager.save_progress()
             return
     
     # Get list details
@@ -76,8 +102,23 @@ async def main():
             await manager.stop()
             print("Operations cancelled.")
     
+    except Unauthorized:
+        print("Error: Authentication failed. Please check your credentials.")
+        manager.save_progress()
+    except Forbidden:
+        print("Error: You don't have permission to perform this action.")
+        manager.save_progress()
+    except TooManyRequests:
+        print("Rate limit exceeded. Please try again later.")
+        manager.save_progress()
+    except (UserNotFound, UserUnavailable):
+        print("Error: User account is not accessible.")
+        manager.save_progress()
+    except ServerError:
+        print("Twitter's servers are experiencing issues. Please try again later.")
+        manager.save_progress()
     except Exception as e:
-        print(f"\nAn error occurred: {str(e)}")
+        print(f"\nUnexpected error: {str(e)}")
         manager.save_progress()
         print("Progress saved due to error.")
         raise
