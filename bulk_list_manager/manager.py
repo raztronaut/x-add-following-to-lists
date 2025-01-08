@@ -181,9 +181,11 @@ class TwitterListManager:
             try:
                 user_id = str(getattr(user, 'id', None))
                 if not user_id:
+                    print("Skipping user with no ID")
                     continue
 
                 if mode in ["add_to_list", "both"]:
+                    print(f"Attempting to add user {user_id} to list...")
                     await self._add_to_list(user_id, list_id)
                 
                 if mode in ["unfollow", "both"]:
@@ -195,30 +197,55 @@ class TwitterListManager:
                 self.processed_users.add(user_id)
                 self.stats["processed"] += 1
                 
-            except (BadRequest, Forbidden, NotFound, UserNotFound, UserUnavailable) as e:
-                print(f"Failed to process user {user_id}: {str(e)}")
-                self.stats["failed"] += 1
-            except TooManyRequests:
-                print("Rate limit exceeded. Waiting...")
-                await asyncio.sleep(900)  # Wait 15 minutes
             except Exception as e:
-                print(f"Unexpected error processing user: {str(e)}")
+                print(f"Unexpected error processing user {getattr(user, 'id', 'unknown')}: {str(e)}")
                 self.stats["failed"] += 1
                 
             print_status(self.stats)
 
     async def _add_to_list(self, user_id: str, list_id: str):
         """Add a user to the specified list."""
-        try:
-            await asyncio.sleep(2)  # Add cooldown
-            await self.client.add_list_member(list_id, user_id)
-            self.stats["added_to_list"] += 1
-        except NotFound as e:
-            print(f"List or user not found: {str(e)}")
-            self.stats["failed"] += 1
-        except Exception as e:
-            print(f"Failed to add user {user_id} to list: {str(e)}")
-            self.stats["failed"] += 1
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                await asyncio.sleep(2)  # Add cooldown
+                
+                # Check rate limits before attempting
+                while not await self.rate_limiter.check_limit("add_list_member"):
+                    self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("add_list_member")
+                    print_status(self.stats)
+                    await asyncio.sleep(60)
+                
+                response = await self.client.add_list_member(list_id, user_id)
+                await self.rate_limiter.increment("add_list_member")
+                self.stats["added_to_list"] += 1
+                return  # Success, exit the function
+                
+            except TooManyRequests:
+                print(f"Rate limit hit when adding user {user_id} to list. Waiting...")
+                await asyncio.sleep(900)  # Wait 15 minutes
+                retry_count += 1
+                
+            except NotFound as e:
+                print(f"List or user not found: {str(e)}")
+                self.stats["failed"] += 1
+                return  # Don't retry for not found errors
+                
+            except Forbidden as e:
+                print(f"Forbidden to add user {user_id} to list: {str(e)}")
+                self.stats["failed"] += 1
+                return  # Don't retry for permission errors
+                
+            except Exception as e:
+                print(f"Failed to add user {user_id} to list (attempt {retry_count + 1}/{max_retries}): {str(e)}")
+                retry_count += 1
+                await asyncio.sleep(5)  # Wait a bit before retrying
+        
+        # If we get here, all retries failed
+        self.stats["failed"] += 1
+        print(f"Failed to add user {user_id} to list after {max_retries} attempts")
 
     async def _unfollow_user(self, user_id: str):
         """Unfollow a user with rate limiting."""
