@@ -1,13 +1,17 @@
-# Twitter List Manager
+# X List Manager
 
-A Python tool that helps you manage your Twitter following list by moving all followed accounts to a single list and then unfollowing them. Built with [twikit](https://github.com/d60/twikit).
+A Python tool that helps you manage your X following list by moving all followed accounts to a single list and then unfollowing them. Built with [twikit](https://github.com/d60/twikit), which provides API access without requiring an API key.
 
 ## Features
 
-- Create a new Twitter list (public or private)
+- No API key required - uses Twikit's implementation
+- Flexible authentication:
+  - Login with username/email/password
+  - Login with auth_token and ct0 cookies
+- Create a new X list (public or private)
 - Move all followed accounts to the list
 - Unfollow accounts after adding them to the list
-- Respect Twitter API rate limits
+- Sophisticated rate limit handling
 - Save progress and resume capability
 - Interactive CLI with real-time status updates
 - Pause/Resume/Stop functionality
@@ -17,7 +21,7 @@ A Python tool that helps you manage your Twitter following list by moving all fo
 ```bash
 # Clone the repository
 git clone [repository-url]
-cd twitter-list-manager
+cd bulk-list-manager
 
 # Install dependencies
 pip install -r requirements.txt
@@ -30,14 +34,21 @@ python -m bulk_list_manager.example
 ```
 
 The tool will:
-1. Ask for your Twitter auth token (or use from environment variable `TWITTER_AUTH_TOKEN`)
+1. Authenticate using either credentials or cookies
 2. Create a new list with your specified name and settings
 3. Process all your following accounts in batches
 4. Show real-time progress and statistics
 
+### Authentication Options
+
+1. Using credentials:
+   - Provide username, email, and password
+2. Using cookies:
+   - Provide auth_token and ct0 cookies
+
 ### Rate Limits
 
-The tool respects Twitter's rate limits:
+The tool respects X's rate limits:
 - Following retrieval: 500 requests per 15 minutes
 - Unfollowing: 187 requests per 15 minutes
 
@@ -55,7 +66,6 @@ Progress is automatically saved after each batch and can be resumed later. The t
 - Python 3.7+
 - twikit library
 - Internet connection
-- Twitter auth token
 
 ## Error Handling
 

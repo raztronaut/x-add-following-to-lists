@@ -10,12 +10,25 @@ from .manager import TwitterListManager
 from .utils import load_state
 
 async def get_credentials():
-    """Get user credentials."""
-    print("\nPlease enter your Twitter credentials:")
-    username = input("Username: ").strip()
-    email = input("Email: ").strip()
-    password = input("Password: ").strip()
-    return username, email, password
+    """Get user credentials or auth cookies."""
+    print("\nAuthentication Options:")
+    print("1. Use Twitter credentials (username/email/password)")
+    print("2. Use auth_token and ct0 cookies")
+    
+    choice = input("\nChoose authentication method (1/2): ").strip()
+    
+    if choice == "1":
+        print("\nPlease enter your Twitter credentials:")
+        username = input("Username: ").strip()
+        email = input("Email: ").strip()
+        password = input("Password: ").strip()
+        return {"username": username, "email": email, "password": password}
+    else:
+        print("\nPlease enter your auth cookies:")
+        print("(You can find these in your browser's cookies after logging into Twitter)")
+        auth_token = input("auth_token: ").strip()
+        ct0 = input("ct0: ").strip()
+        return {"auth_token": auth_token, "ct0": ct0}
 
 async def main():
     # Initialize manager
@@ -23,8 +36,8 @@ async def main():
     
     # Get credentials and login
     try:
-        username, email, password = await get_credentials()
-        await manager.login(username, email, password)
+        creds = await get_credentials()
+        await manager.login(**creds)
         print("Successfully authenticated!")
     except Unauthorized:
         print("Error: Authentication failed. Please check your credentials.")

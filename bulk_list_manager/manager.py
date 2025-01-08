@@ -17,7 +17,7 @@ class TwitterListManager:
     
     def __init__(self):
         """Initialize the manager."""
-        self.client = Client('en-US')  # Twikit requires locale
+        self.client = Client('en-US')  # Initialize with locale
         self.rate_limiter = RateLimiter()
         self.current_batch: List[Dict] = []
         self.processed_users: Set[str] = set()
@@ -31,26 +31,34 @@ class TwitterListManager:
             "failed": 0,
             "time_to_next": 0
         }
-        self.cookies_file = "twitter_cookies.json"
-        
-    async def login(self, username: str, email: str, password: str):
-        """Login to Twitter and save cookies."""
+
+    async def login(self, username: str = None, email: str = None, password: str = None, 
+                   auth_token: str = None, ct0: str = None):
+        """Login to Twitter using either credentials or cookies."""
         try:
-            # Try loading existing cookies first
-            if Path(self.cookies_file).exists():
-                await self.client.load_cookies(self.cookies_file)
-                print("Loaded existing session from cookies")
+            # If auth_token and ct0 are provided, use them
+            if auth_token and ct0:
+                # Create a cookies dictionary
+                cookies = {
+                    "auth_token": auth_token,
+                    "ct0": ct0,
+                    "x-csrf-token": ct0  # Add CSRF token as cookie
+                }
+                # Set cookies using client's method
+                self.client.set_cookies(cookies)
+                print("Successfully set authentication cookies")
                 return
 
-            # If no cookies or they're invalid, perform fresh login
-            await self.client.login(
-                auth_info_1=username,
-                auth_info_2=email,
-                password=password
-            )
-            # Save cookies for future use
-            await self.client.save_cookies(self.cookies_file)
-            print("Successfully logged in and saved session")
+            # If credentials provided, use them
+            if username and email and password:
+                await self.client.login(
+                    auth_info_1=username,
+                    auth_info_2=email,
+                    password=password
+                )
+                print("Successfully logged in")
+            else:
+                raise ValueError("Either credentials or auth cookies must be provided")
         except Exception as e:
             print(f"Login failed: {str(e)}")
             raise
@@ -66,20 +74,25 @@ class TwitterListManager:
             response = await self.client.create_list(
                 name=name,
                 description=description,
-                private=is_private  # Twikit uses 'private' instead of 'is_private'
+                is_private=is_private
             )
             
             if not response:
                 raise BadRequest("Failed to create list")
+            
+            # Extract list ID from response
+            list_id = getattr(response, 'id', None)
+            if not list_id:
+                raise BadRequest("Failed to get list ID from response")
                 
-            return response
+            return {"id": list_id, "name": name}
         except Exception as e:
             print(f"Failed to create list: {str(e)}")
             raise
     
     async def process_following(self, list_id: str):
         """Process all following accounts in batches."""
-        batch_size = 450  # Conservative with rate limits
+        batch_size = 200  # Increased since we have 500 requests per 15 min window
         following = []
         cursor = None
         
@@ -90,33 +103,43 @@ class TwitterListManager:
             self.stats = saved_state.get("stats", self.stats)
         
         try:
+            # Get the authenticated user's ID
+            user_id = await self.client.user_id()
+            
             # Fetch all following
             while True:
                 if self._should_stop:
                     return
                     
-                while not await self.rate_limiter.check_limit("get_following"):
-                    self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("get_following")
+                # Check rate limit for get_user_following (500 per 15 min)
+                while not await self.rate_limiter.check_limit("get_user_following"):
+                    self.stats["time_to_next"] = await self.rate_limiter.time_until_reset("get_user_following")
                     print_status(self.stats)
                     await asyncio.sleep(60)
                 
                 try:
-                    response = await self.client.get_user_follows(cursor=cursor)
+                    # Get following using the user_id, count, and cursor
+                    response = await self.client.get_user_following(
+                        user_id=user_id,
+                        count=batch_size,
+                        cursor=cursor
+                    )
                     if not response:
                         raise NotFound("Failed to get following")
 
-                    # Handle twikit's response format
-                    users = response.get('users', []) if isinstance(response, dict) else []
+                    # Handle twikit's Result[User] format
+                    users = response
                     
                     new_users = [user for user in users 
-                               if user.get('rest_id') not in self.processed_users]
+                               if str(getattr(user, 'id', None)) not in self.processed_users]
                     following.extend(new_users)
                     
-                    await self.rate_limiter.increment("get_following")
+                    await self.rate_limiter.increment("get_user_following")
                     
-                    if len(users) < batch_size:  # No more users to fetch
+                    # Update cursor for next iteration
+                    cursor = response.next_cursor
+                    if not cursor or len(response) < batch_size:  # No more users to fetch
                         break
-                    cursor = users[-1].get('rest_id')  # Use last user's ID as cursor
                     
                     self.stats["total"] = len(following) + len(self.processed_users)
                     print_status(self.stats)
@@ -146,7 +169,7 @@ class TwitterListManager:
                 return
                 
             try:
-                user_id = user.get('rest_id')
+                user_id = str(getattr(user, 'id', None))
                 if not user_id:
                     continue
 
@@ -174,7 +197,7 @@ class TwitterListManager:
                 self.stats["processed"] += 1
                 
             except (BadRequest, Forbidden, NotFound, UserNotFound, UserUnavailable) as e:
-                print(f"Failed to process user {user.get('rest_id', 'unknown')}: {str(e)}")
+                print(f"Failed to process user {getattr(user, 'id', 'unknown')}: {str(e)}")
                 self.stats["failed"] += 1
             except TooManyRequests:
                 print("Rate limit exceeded. Waiting...")

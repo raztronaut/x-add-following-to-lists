@@ -16,8 +16,8 @@ class RateLimiter:
         """Initialize rate limits for different operations."""
         # All windows are 15 minutes (900 seconds) according to twikit docs
         self.limits: Dict[str, RateLimit] = {
-            'unfollow': RateLimit(limit=187, window=900),  # friendships/destroy.json
-            'get_following': RateLimit(limit=500, window=900),  # Following endpoint
+            'unfollow': RateLimit(limit=187, window=900),  # friendships/destroy
+            'get_user_following': RateLimit(limit=500, window=900),  # Following endpoint
         }
         
     async def check_limit(self, operation: str) -> bool:
